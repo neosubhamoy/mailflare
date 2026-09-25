@@ -57,20 +57,20 @@
 	"send_email": [
 		{
 			"name": "EMAIL",
-			"remote": true,
+			"remote": false,
 		},
 	],
 	"d1_databases": [
 		{
 			"binding": "DB",
 			"database_name": "mailflare",
-			"migrations_dir": "drizzle/migrations","database_id": "1e7651f8-8d09-4789-a8c3-a246713e2f03",
+			"migrations_dir": "drizzle/migrations",
 		},
 	],
 	"r2_buckets": [
 		{
 			"binding": "BUCKET",
-			"bucket_name": "mailflare-raw","preview_bucket_name": "mailflare-raw",
+			"bucket_name": "mailflare-raw",
 		},
 	],
 	"queues": {

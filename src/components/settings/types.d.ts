@@ -25,6 +25,25 @@ export type AccountSettingsResponse = {
 	error?: unknown;
 };
 
+export type MfaStatusResponse = {
+	enabled: boolean;
+	confirmedAt: string | null;
+	recoveryCodesLeft: number;
+	error?: unknown;
+};
+
+export type MfaEnrollmentResponse = {
+	secret?: string;
+	otpauthUrl?: string;
+	qrSvg?: string;
+	error?: unknown;
+};
+
+export type MfaRecoveryCodesResponse = {
+	recoveryCodes?: string[];
+	error?: unknown;
+};
+
 export type ForwardingEmailFormProps = {
 	initialForwardingEmail: string;
 };
@@ -80,6 +99,7 @@ export type ProfileAvatarFormProps = {
 	mailboxId?: string;
 	initialHasAvatar?: boolean;
 	name?: string;
+	colorSeed?: string;
 };
 
 export type CurrentMailboxFormResponse = {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,26 +14,35 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { List } from "@/components/ui/list";
 import { CheckCircle2, LoaderCircle, Plus } from "lucide-react";
 import { authFetch } from "@/lib/auth/client";
-import type { DnsStatusSummary, Domain, DomainDnsView, DomainPreflight } from "./types";
+import type { DnsAuthRecord, DnsStatusSummary, Domain, DomainDnsCache, DomainDnsView, DomainPreflight } from "./types";
 import DomainItemCard from "./DomainItemCard";
-import DomainDnsDetails from "./DomainDnsDetails";
-import { CardGridSkeleton } from "@/components/page-skeletons";
+import { SectionRowSkeleton } from "@/components/page-skeletons";
 import { checkDomain } from "./utils";
 
 export default function DomainsPage() {
   const qc = useQueryClient();
   const [hostname, setHostname] = useState("");
+  // Self-hosted installs without Cloudflare credentials manage DNS by hand.
+  const { data: me } = useQuery({
+    queryKey: ["me"],
+    queryFn: async () => (await (await authFetch("/api/auth/me")).json()) as { managesDns?: boolean },
+  });
+  const managesDns = me?.managesDns ?? true;
   const [domainCheck, setDomainCheck] = useState<DomainPreflight | null>(null);
   const [domainChecking, setDomainChecking] = useState(false);
   const [enableSending, setEnableSending] = useState(false);
   const [domainCheckError, setDomainCheckError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [dnsView, setDnsView] = useState<{
-    domain: Domain;
-    dns: DomainDnsView;
-  } | null>(null);
+  const [setupRecord, setSetupRecord] = useState<DnsAuthRecord | null>(null);
+  const [setupMessage, setSetupMessage] = useState<string | null>(null);
+  const [expandedDomainId, setExpandedDomainId] = useState<string | null>(null);
+  const expandedIdRef = useRef<string | null>(null);
+  const [dnsLoading, setDnsLoading] = useState(false);
+  const [dnsError, setDnsError] = useState<string | null>(null);
+  const [dnsViews, setDnsViews] = useState<DomainDnsCache>({});
 
   const { data, isLoading } = useQuery({
     queryKey: ["domains"],
@@ -96,8 +105,81 @@ export default function DomainsPage() {
 
   const loadDns = async (id: string) => {
     const res = await authFetch(`/api/domains/${id}/dns`);
-    const json = (await res.json()) as { domain: Domain; dns: DomainDnsView };
-    if (res.ok) setDnsView(json);
+    const json = (await res.json()) as {
+      domain?: Domain;
+      dns?: DomainDnsView;
+      error?: string;
+    };
+    if (!res.ok || !json.domain || !json.dns) {
+      throw new Error(json.error ?? "Failed to load DNS");
+    }
+    const loadedView = { domain: json.domain, dns: json.dns };
+    setDnsViews((current) => ({ ...current, [id]: loadedView }));
+    if (expandedIdRef.current === id) setSetupMessage(null);
+  };
+
+  const toggleDns = async (id: string) => {
+    if (expandedDomainId === id) {
+      expandedIdRef.current = null;
+      setExpandedDomainId(null);
+      setSetupMessage(null);
+      setDnsLoading(false);
+      setDnsError(null);
+      return;
+    }
+    // Expand immediately and show a skeleton while the audit is fetched, rather
+    // than leaving the card unchanged until the request resolves.
+    expandedIdRef.current = id;
+    setExpandedDomainId(id);
+    setSetupMessage(null);
+    setDnsError(null);
+    if (dnsViews[id]) {
+      setDnsLoading(false);
+      return;
+    }
+    setDnsLoading(true);
+    try {
+      await loadDns(id);
+    } catch (error) {
+      if (expandedIdRef.current === id) {
+        setDnsError(error instanceof Error ? error.message : "Failed to load DNS");
+      }
+    } finally {
+      if (expandedIdRef.current === id) setDnsLoading(false);
+    }
+  };
+
+  const setupDns = async (record: DnsAuthRecord) => {
+    if (!expandedDomainId) return;
+    const dnsView = dnsViews[expandedDomainId];
+    if (!dnsView) return;
+    setSetupRecord(record);
+    setSetupMessage(null);
+    try {
+      const res = await authFetch(`/api/domains/${dnsView.domain.id}/dns/setup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ record }),
+      });
+      const json = (await res.json()) as {
+        domain?: Domain;
+        dns?: DomainDnsView;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(json.error ?? "Failed to set up DNS record");
+      if (json.domain && json.dns) {
+        const updatedView = { domain: json.domain, dns: json.dns };
+        setDnsViews((current) => ({
+          ...current,
+          [dnsView.domain.id]: updatedView,
+        }));
+      } else await loadDns(dnsView.domain.id);
+      qc.invalidateQueries({ queryKey: ["domains"] });
+    } catch (error) {
+      setSetupMessage(error instanceof Error ? error.message : "Failed to set up DNS record");
+    } finally {
+      setSetupRecord(null);
+    }
   };
 
   const inspectDomain = async () => {
@@ -125,8 +207,9 @@ export default function DomainsPage() {
         <div>
           <h1 className="text-3xl font-medium">Domains</h1>
           <p className="mt-1 text-sm text-neutral-500">
-            Domains must be on your Cloudflare account. Email Routing is enabled
-            automatically, and Email Sending can be enabled when available.
+            {managesDns
+              ? "Domains must be on your Cloudflare account. Email Routing is enabled automatically, and Email Sending can be enabled when available."
+              : "Add the domains this server receives mail for. Open DNS on a domain to see the MX, SPF and DMARC records to create."}
           </p>
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -231,31 +314,35 @@ export default function DomainsPage() {
 					<span className="text-sm text-neutral-500">{(data?.domains ?? []).length} total</span>
 				</div> */}
         {isLoading && (
-          <CardGridSkeleton />
+          <SectionRowSkeleton />
         )}
         {!isLoading && (data?.domains ?? []).length === 0 && (
           <p className="rounded-2xl bg-white px-5 py-4 text-sm text-neutral-500">
             No domains yet
           </p>
         )}
-        <div className="grid gap-3">
+        <List>
           {(data?.domains ?? []).map((d) => {
             const dns = data?.dns?.[d.id];
             return (
               <DomainItemCard
                 key={d.id}
                 dns={dns}
-                loadDns={loadDns}
+                dnsDetails={dnsViews[d.id]?.dns}
+                dnsLoading={expandedDomainId === d.id && dnsLoading}
+                dnsError={expandedDomainId === d.id ? dnsError : null}
+                expanded={expandedDomainId === d.id}
+                onToggleDns={toggleDns}
+                onSetup={setupDns}
+                setupRecord={setupRecord}
+                setupMessage={setupMessage}
                 item={d}
                 remove={remove}
               />
             );
           })}
-        </div>
+        </List>
       </section>
-      {dnsView && (
-        <DomainDnsDetails domain={dnsView.domain} dns={dnsView.dns} />
-      )}
     </div>
   );
 }

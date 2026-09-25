@@ -2,16 +2,18 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, CheckCircle2, LoaderCircle, MailPlus, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, LoaderCircle, MailPlus, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { TurnstileField } from "@/components/auth/turnstile";
 import {
   getSetupStatus,
+  checkExistingMx,
   prepareSetup,
   submitPrimaryDomain,
   submitRegistration,
@@ -36,12 +38,48 @@ export function RegisterClient() {
   const [databaseMigrated, setDatabaseMigrated] = useState(false);
   const [preparationComplete, setPreparationComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mxChecking, setMxChecking] = useState(true);
+  const [mxRecordsExist, setMxRecordsExist] = useState<boolean | null>(null);
+  const [replaceMxRecords, setReplaceMxRecords] = useState(false);
+  const [mxCheckRevision, setMxCheckRevision] = useState(0);
   const [loading, setLoading] = useState(false);
   const [turnstileReset, setTurnstileReset] = useState(0);
 
   useEffect(() => {
     void runPreparation();
   }, []);
+
+  const accountDomain = setupDomain ?? primaryDomain;
+
+  useEffect(() => {
+    if (step !== 3 || !accountDomain) return;
+
+    let active = true;
+    setMxChecking(true);
+    setMxRecordsExist(null);
+    setReplaceMxRecords(false);
+    setError(null);
+
+    void checkExistingMx(accountDomain)
+      .then(({ ok, data }) => {
+        if (!active) return;
+        setMxChecking(false);
+        if (!ok || data.hasExistingMx === undefined) {
+          setError(typeof data.error === "string" ? data.error : "Could not check existing MX records");
+          return;
+        }
+        setMxRecordsExist(data.hasExistingMx);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setMxChecking(false);
+        setError(error instanceof Error ? error.message : "Could not check existing MX records");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [step, accountDomain, mxCheckRevision]);
 
   async function runPreparation() {
     setLoading(true);
@@ -89,7 +127,7 @@ export function RegisterClient() {
       return;
     }
     setSetupDomain(data.domain.hostname);
-    setSetupEnableSending(usedCachedCheck ? enableSending : true);
+    setSetupEnableSending(usedCachedCheck ? enableSending : false);
     setStep(3);
   }
 
@@ -109,7 +147,7 @@ export function RegisterClient() {
     }
 
     setDomainCheck(data.domain);
-    setEnableSending(true);
+    setEnableSending(false);
   }
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -131,19 +169,26 @@ export function RegisterClient() {
       enableSending: setupDomain
         ? setupEnableSending
         : primaryDomainSendingRequested ?? undefined,
+      replaceMxRecords,
     });
     setLoading(false);
     if (!ok) {
+      if (data.code === "MX_RECORDS_CONFLICT") {
+        setMxRecordsExist(true);
+        setReplaceMxRecords(false);
+        setError(null);
+        setTurnstileReset((value) => value + 1);
+        return;
+      }
       setError(
         typeof data.error === "string" ? data.error : "Registration failed",
       );
       setTurnstileReset((value) => value + 1);
       return;
     }
-    router.push(data.redirect ?? "/inbox");
+    window.location.assign(data.redirect ?? "/login");
   }
 
-  const accountDomain = setupDomain ?? primaryDomain;
   const showDomainStep = hasPrimaryDomain === false && step === 2;
 
   if (hasAdminAccount === true) {
@@ -314,6 +359,36 @@ export function RegisterClient() {
         </form>
       ) : (
         <form method="post" onSubmit={onSubmit} className="space-y-5">
+					{mxChecking && (
+						<div className="flex items-center gap-3 rounded-2xl bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
+							<LoaderCircle className="h-4 w-4 animate-spin" />
+							Checking existing MX records
+						</div>
+					)}
+					{mxRecordsExist === false && (
+						<div className="flex items-center gap-3 rounded-2xl bg-green-50 px-4 py-3 text-sm text-green-700">
+							<CheckCircle2 className="h-4 w-4" />
+							No existing MX records found
+						</div>
+					)}
+					{mxRecordsExist === true && (
+						<label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-amber-900">
+							<Checkbox
+								checked={replaceMxRecords}
+								onChange={(event) => setReplaceMxRecords(event.target.checked)}
+								className="mt-1"
+							/>
+							<span>
+								<span className="flex items-center gap-2 text-sm font-medium">
+									<AlertTriangle className="h-4 w-4" />
+									Replace existing MX records
+								</span>
+								<span className="mt-1 block text-xs leading-5">
+									This deletes the current mail provider's MX records and replaces them with Cloudflare Email Routing. The previous provider will stop receiving mail.
+								</span>
+							</span>
+						</label>
+					)}
           <div className="space-y-2">
             <Label htmlFor="username">Username</Label>
             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 relative">
@@ -359,14 +434,24 @@ export function RegisterClient() {
               {error}
             </p>
           )}
+					{!mxChecking && mxRecordsExist === null && (
+						<Button
+							type="button"
+							variant="outline"
+							className="h-11 w-full rounded-full px-6 active:scale-[0.98]"
+							onClick={() => setMxCheckRevision((value) => value + 1)}
+						>
+							Check MX records again
+						</Button>
+					)}
           <TurnstileField resetSignal={turnstileReset} />
-          <Button
-            type="submit"
-            className="h-11 w-full rounded-full px-6 active:scale-[0.98] mt-8"
-            disabled={loading || hasAdminAccount === null || hasPrimaryDomain === null}
-          >
-            {loading ? "Creating..." : "Create account"}
-          </Button>
+					<Button
+						type="submit"
+						className="h-11 w-full rounded-full px-6 active:scale-[0.98] mt-8"
+						disabled={loading || mxChecking || mxRecordsExist === null || (mxRecordsExist && !replaceMxRecords) || hasAdminAccount === null || hasPrimaryDomain === null}
+					>
+						{loading ? "Creating..." : "Create account"}
+					</Button>
         </form>
       )}
     </AuthShell>

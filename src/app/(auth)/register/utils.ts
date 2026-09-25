@@ -1,6 +1,7 @@
-import { persistAuthSession } from "@/lib/auth/client";
+import { clearClientSessionToken } from "@/lib/auth/client";
 import type {
 	DomainSetupResult,
+	MxCheckResult,
 	RegisterResult,
 	SetupPreparationResult,
 	SetupStatus,
@@ -34,9 +35,22 @@ export async function submitPrimaryDomain(hostname: string): Promise<{ ok: boole
 	};
 }
 
+export async function checkExistingMx(hostname: string): Promise<{ ok: boolean; data: MxCheckResult }> {
+	const res = await fetch("/api/setup/domain/mx", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ hostname }),
+	});
+
+	return {
+		ok: res.ok,
+		data: (await res.json()) as MxCheckResult,
+	};
+}
+
 export async function submitRegistration(
 	form: FormData,
-	payload: { firstRun: boolean; domain: string; enableSending?: boolean },
+	payload: { firstRun: boolean; domain: string; enableSending?: boolean; replaceMxRecords?: boolean },
 ): Promise<{ ok: boolean; data: RegisterResult }> {
 	const res = await fetch("/api/auth/register", {
 		method: "POST",
@@ -46,6 +60,7 @@ export async function submitRegistration(
 				? {
 						domain: payload.domain,
 						enableSending: payload.enableSending,
+						replaceMxRecords: payload.replaceMxRecords,
 						username: form.get("username"),
 						password: form.get("password"),
 						resetEmail: form.get("resetEmail"),
@@ -60,8 +75,7 @@ export async function submitRegistration(
 		),
 	});
 
-	return {
-		ok: res.ok,
-		data: (await persistAuthSession(res)) as RegisterResult,
-	};
+	const data = (await res.json()) as RegisterResult;
+	if (res.ok) clearClientSessionToken();
+	return { ok: res.ok, data };
 }

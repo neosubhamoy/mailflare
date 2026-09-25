@@ -7,11 +7,11 @@ import type {
   GitHubRepositoryResponse,
   GitHubWorkflowDispatchResponse,
   PackageMetadata,
+  UpdateConfigurationItem,
   UpdateDispatchConfig,
   UpdateStatus,
 } from "./types";
 import packageMetadata from "../../../../../package.json";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 const GITHUB_API_URL = "https://api.github.com";
 const GITHUB_API_VERSION = "2026-03-10";
@@ -59,11 +59,24 @@ function getDispatchConfig(env: CloudflareEnv): UpdateDispatchConfig {
   return { token, repository, ref: ref || undefined };
 }
 
+function getUpdateConfiguration(env: CloudflareEnv): UpdateConfigurationItem[] {
+  return [
+    {
+      name: "GITHUB_UPDATE_TOKEN",
+      configured: !!env.GITHUB_UPDATE_TOKEN?.trim(),
+    },
+    {
+      name: "GITHUB_UPDATE_REPO",
+      configured: !!env.GITHUB_UPDATE_REPO?.trim(),
+    },
+  ];
+}
+
 async function githubRequest<T>(
   path: string,
   init?: RequestInit,
 ): Promise<{ data?: T; response: Response }> {
-  const { env } = getCloudflareContext();
+  const env = getEnv();
 
   const response = await fetch(`${GITHUB_API_URL}${path}`, {
     cache: "no-store",
@@ -168,12 +181,25 @@ async function getTargetVersion(): Promise<string> {
 export async function getUpdateStatus(
   env: CloudflareEnv,
 ): Promise<UpdateStatus> {
-  const config = getDispatchConfig(env);
   const currentVersion = packageMetadata.version;
+  const configuration = getUpdateConfiguration(env);
+  const configured = configuration.every((item) => item.configured);
+
+  if (!configured) {
+    return {
+      configuration,
+      configured,
+      currentVersion,
+    };
+  }
+
+  getDispatchConfig(env);
   const targetVersion = await getTargetVersion();
 
   return {
     available: isNewerVersion(targetVersion, currentVersion),
+    configuration,
+    configured,
     currentVersion,
     repository: UPDATE_SOURCE_REPOSITORY,
     targetVersion,
@@ -181,7 +207,7 @@ export async function getUpdateStatus(
 }
 
 export async function dispatchUpdateWorkflow() {
-  const { env } = getCloudflareContext();
+  const env = getEnv();
 
   const config = getDispatchConfig(env);
   const repository = config.repository;
